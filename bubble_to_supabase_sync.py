@@ -230,17 +230,63 @@ class SupabaseSync:
 
     def transform_record(self, record: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Transform a Bubble record for Supabase insertion
+        Transform a Bubble record for Supabase insertion with comprehensive type conversion
 
         Handles:
-        - JSONB conversion for arrays and objects
-        - Photo URL fixes
-        - Price field transformations
-        - Date formatting
+        - Integer fields: Converts decimals/strings to integers (rounds decimals)
+        - Numeric fields: Handles currency symbols, percentage signs
+        - Boolean fields: Normalizes various truthy/falsy values
+        - JSONB fields: Arrays and objects
+        - URL fields: Fixes protocol-relative URLs (//cdn.com -> https://cdn.com)
+        - Timestamp fields: ISO 8601 date strings
+        - Text fields: Proper string conversion
         """
         # Validate input is a dictionary
         if not isinstance(record, dict):
             raise ValueError(f"Expected dict for record, got {type(record).__name__}: {record}")
+
+        # Define field type mappings for the listing table
+        # This can be extended to load from a config file for other tables
+        INTEGER_FIELDS = {
+            '# of nights available', '.Search Ranking', 'Features - Qty Bathrooms',
+            'Features - Qty Bedrooms', 'Features - Qty Beds', 'Features - Qty Guests',
+            'Features - SQFT Area', 'Features - SQFT of Room', 'Maximum Months',
+            'Maximum Nights', 'Maximum Weeks', 'Metrics - Click Counter',
+            'Minimum Months', 'Minimum Nights', 'Minimum Weeks',
+            'weeks out to available', '💰Cleaning Cost / Maintenance Fee',
+            '💰Damage Deposit', '💰Monthly Host Rate', '💰Price Override',
+            '💰Unit Markup'
+        }
+
+        NUMERIC_FIELDS = {
+            'ClicksToViewRatio', 'DesirabilityTimesReceptivity',
+            'Standarized Minimum Nightly Price (Filter)',
+            '💰Nightly Host Rate for 2 nights', '💰Nightly Host Rate for 3 nights',
+            '💰Nightly Host Rate for 4 nights', '💰Nightly Host Rate for 5 nights',
+            '💰Nightly Host Rate for 7 nights', '💰Weekly Host Rate'
+        }
+
+        BOOLEAN_FIELDS = {
+            'Active', 'Approved', 'Complete', 'Default Extension Setting',
+            'Default Listing', 'Features - Trial Periods Allowed', 'Showcase',
+            'allow alternating roommates?', 'confirmedAvailability', 'is private?',
+            'isForUsability', 'saw chatgpt suggestions?'
+        }
+
+        JSONB_FIELDS = {
+            'AI Suggestions List', 'Clickers', 'Dates - Blocked',
+            'Days Available (List of Days)', 'Days Not Available', 'Errors',
+            'Features - Amenities In-Building', 'Features - Amenities In-Unit',
+            'Features - House Rules', 'Features - Photos', 'Features - Safety',
+            'Listing Curation', 'Location - Address', 'Location - Hoods (new)',
+            'Location - slightly different address', 'Nights Available (List of Nights) ',
+            'Nights Available (numbers)', 'Nights Not Available', 'Reviews',
+            'Users that favorite', 'Viewers', 'users with permission'
+        }
+
+        TIMESTAMP_FIELDS = {
+            'Created Date', 'Modified Date', 'Operator Last Updated AUT'
+        }
 
         transformed = {}
 
@@ -249,24 +295,91 @@ class SupabaseSync:
             if value is None:
                 continue
 
-            # Handle arrays and objects - store as JSONB
-            if isinstance(value, (list, dict)):
-                transformed[key] = json.dumps(value) if value else None
+            try:
+                # Handle INTEGER fields
+                if key in INTEGER_FIELDS:
+                    if isinstance(value, (int, float)):
+                        # Round floats to nearest integer
+                        transformed[key] = int(round(value))
+                    elif isinstance(value, str):
+                        # Remove common non-numeric characters
+                        cleaned = value.replace('$', '').replace(',', '').replace('%', '').strip()
+                        if cleaned:
+                            try:
+                                transformed[key] = int(round(float(cleaned)))
+                            except ValueError:
+                                logger.warning(f"Could not convert '{key}' value '{value}' to integer, skipping")
+                                continue
+                    else:
+                        transformed[key] = int(value)
 
-            # Fix photo URLs (protocol-relative)
-            elif isinstance(value, str) and value.startswith('//'):
-                transformed[key] = f'https:{value}'
+                # Handle NUMERIC (decimal) fields
+                elif key in NUMERIC_FIELDS or 'price' in key.lower() or 'rate' in key.lower():
+                    if isinstance(value, (int, float)):
+                        transformed[key] = float(value)
+                    elif isinstance(value, str):
+                        # Remove currency symbols, commas, percentage signs
+                        cleaned = value.replace('$', '').replace(',', '').replace('%', '').strip()
+                        if cleaned:
+                            try:
+                                transformed[key] = float(cleaned)
+                            except ValueError:
+                                # If it's a "Price number (for map)" field, keep as string
+                                if 'Price number' in key:
+                                    transformed[key] = value
+                                else:
+                                    logger.warning(f"Could not convert '{key}' value '{value}' to numeric, skipping")
+                                    continue
+                    else:
+                        transformed[key] = float(value)
 
-            # Handle price fields (remove $, commas)
-            elif isinstance(value, str) and key.lower().find('price') != -1:
-                try:
-                    cleaned = value.replace('$', '').replace(',', '').strip()
-                    transformed[key] = float(cleaned) if cleaned else None
-                except (ValueError, AttributeError):
+                # Handle BOOLEAN fields
+                elif key in BOOLEAN_FIELDS:
+                    if isinstance(value, bool):
+                        transformed[key] = value
+                    elif isinstance(value, str):
+                        # Normalize string boolean values
+                        transformed[key] = value.lower() in ('true', 'yes', '1', 'y')
+                    elif isinstance(value, (int, float)):
+                        transformed[key] = bool(value)
+                    else:
+                        transformed[key] = bool(value)
+
+                # Handle JSONB fields (arrays and objects)
+                elif key in JSONB_FIELDS or isinstance(value, (list, dict)):
+                    if isinstance(value, (list, dict)):
+                        transformed[key] = json.dumps(value) if value else None
+                    elif isinstance(value, str):
+                        # Already a JSON string, validate it
+                        try:
+                            json.loads(value)
+                            transformed[key] = value
+                        except json.JSONDecodeError:
+                            # Not valid JSON, wrap as string array
+                            transformed[key] = json.dumps([value])
+                    else:
+                        transformed[key] = json.dumps(value)
+
+                # Handle TIMESTAMP fields
+                elif key in TIMESTAMP_FIELDS:
+                    if isinstance(value, str):
+                        # Bubble sends ISO 8601 timestamps, Supabase handles these natively
+                        transformed[key] = value
+                    else:
+                        transformed[key] = str(value)
+
+                # Handle URL fields with protocol-relative URLs
+                elif isinstance(value, str) and value.startswith('//'):
+                    transformed[key] = f'https:{value}'
+
+                # Handle regular TEXT fields
+                else:
                     transformed[key] = value
 
-            else:
-                transformed[key] = value
+            except Exception as e:
+                logger.warning(f"Error transforming field '{key}' with value '{value}': {e}")
+                # Skip problematic fields rather than failing the entire record
+                continue
 
         return transformed
 
