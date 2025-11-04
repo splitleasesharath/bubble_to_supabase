@@ -1,0 +1,16 @@
+# Bubble to Supabase Sync - Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Supabase client
+supabase==2.10.0
+
+# HTTP requests with retry logic
+requests==2.32.3
+urllib3==2.2.3
+
+# Environment variable management
+python-dotenv==1.0.1
+
+# Additional utilities (if needed)
+# schedule==1.2.2  # For scheduled sync jobs
+# psycopg2-binary==2.9.10  # Direct PostgreSQL connection (optional)
