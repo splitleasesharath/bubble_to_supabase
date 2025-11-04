@@ -143,8 +143,17 @@ class BubbleAPIClient:
             response.raise_for_status()
 
             data = response.json()
-            logger.debug(f"Received {len(data.get('response', []))} records, "
-                        f"{data.get('remaining', 0)} remaining")
+
+            # Handle nested response structure for logging
+            response_data = data.get('response', {})
+            if isinstance(response_data, dict):
+                record_count = len(response_data.get('results', []))
+                remaining_count = response_data.get('remaining', 0)
+            else:
+                record_count = len(response_data) if isinstance(response_data, list) else 0
+                remaining_count = data.get('remaining', 0)
+
+            logger.debug(f"Received {record_count} records, {remaining_count} remaining")
 
             return data
 
@@ -178,8 +187,16 @@ class BubbleAPIClient:
                     limit=self.config.batch_size
                 )
 
-                records = data.get('response', [])
-                remaining = data.get('remaining', 0)
+                # Handle nested response structure from Bubble API
+                response_data = data.get('response', {})
+                if isinstance(response_data, dict):
+                    # New format: {'response': {'results': [...], 'count': ..., 'remaining': ...}}
+                    records = response_data.get('results', [])
+                    remaining = response_data.get('remaining', 0)
+                else:
+                    # Old format: {'response': [...], 'remaining': ...}
+                    records = response_data if isinstance(response_data, list) else []
+                    remaining = data.get('remaining', 0)
 
                 if not records:
                     break
@@ -221,6 +238,10 @@ class SupabaseSync:
         - Price field transformations
         - Date formatting
         """
+        # Validate input is a dictionary
+        if not isinstance(record, dict):
+            raise ValueError(f"Expected dict for record, got {type(record).__name__}: {record}")
+
         transformed = {}
 
         for key, value in record.items():
