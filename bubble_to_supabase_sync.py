@@ -48,6 +48,82 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class ErrorLogger:
+    """Logs comprehensive error information to timestamped JSON file"""
+
+    def __init__(self, run_timestamp: str):
+        self.run_timestamp = run_timestamp
+        self.errors_file = f'sync_errors_{run_timestamp}.json'
+        self.errors = []
+
+    def log_error(
+        self,
+        table_name: str,
+        error_type: str,
+        error_message: str,
+        record_id: Optional[str] = None,
+        field_name: Optional[str] = None,
+        bubble_value: Any = None,
+        bubble_type: Optional[str] = None,
+        supabase_type: Optional[str] = None,
+        full_record: Optional[Dict[str, Any]] = None
+    ):
+        """
+        Log a comprehensive error entry
+
+        Args:
+            table_name: Name of the table being synced
+            error_type: Type of error (e.g., 'field_transform', 'upsert_batch', 'upsert_record')
+            error_message: Detailed error message
+            record_id: Bubble _id of the record
+            field_name: Name of the field that caused the error
+            bubble_value: The actual value from Bubble
+            bubble_type: Python type of the Bubble value
+            supabase_type: Expected Supabase type
+            full_record: The full record data (optional, for debugging)
+        """
+        error_entry = {
+            'timestamp': datetime.now().isoformat(),
+            'run_id': self.run_timestamp,
+            'table': table_name,
+            'error_type': error_type,
+            'error_message': str(error_message),
+            'record_id': record_id,
+            'field_name': field_name,
+            'bubble_value': str(bubble_value) if bubble_value is not None else None,
+            'bubble_type': bubble_type or type(bubble_value).__name__ if bubble_value is not None else None,
+            'supabase_type': supabase_type,
+            'full_record': full_record if full_record else None
+        }
+
+        self.errors.append(error_entry)
+        self._write_to_file()
+
+    def _write_to_file(self):
+        """Write errors to JSON file"""
+        try:
+            with open(self.errors_file, 'w') as f:
+                json.dump({
+                    'run_timestamp': self.run_timestamp,
+                    'total_errors': len(self.errors),
+                    'errors': self.errors
+                }, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to write error log: {e}")
+
+    def get_error_count(self) -> int:
+        """Get total number of errors logged"""
+        return len(self.errors)
+
+    def get_errors_by_type(self) -> Dict[str, int]:
+        """Get count of errors by type"""
+        error_types = {}
+        for error in self.errors:
+            error_type = error['error_type']
+            error_types[error_type] = error_types.get(error_type, 0) + 1
+        return error_types
+
+
 @dataclass
 class SyncConfig:
     """Configuration for the sync process"""
@@ -221,14 +297,71 @@ class BubbleAPIClient:
 class SupabaseSync:
     """Handles syncing data to Supabase"""
 
-    def __init__(self, config: SyncConfig):
+    def __init__(self, config: SyncConfig, error_logger: ErrorLogger):
         self.config = config
+        self.error_logger = error_logger
         self.client: Client = create_client(
             config.supabase_url,
             config.supabase_service_key
         )
 
-    def transform_record(self, record: Dict[str, Any]) -> Dict[str, Any]:
+    def get_field_type(self, field_name: str) -> str:
+        """Determine the expected Supabase type for a field"""
+        INTEGER_FIELDS = {
+            '# of nights available', '.Search Ranking', 'Features - Qty Bathrooms',
+            'Features - Qty Bedrooms', 'Features - Qty Beds', 'Features - Qty Guests',
+            'Features - SQFT Area', 'Features - SQFT of Room', 'Maximum Months',
+            'Maximum Nights', 'Maximum Weeks', 'Metrics - Click Counter',
+            'Minimum Months', 'Minimum Nights', 'Minimum Weeks',
+            'weeks out to available', '💰Cleaning Cost / Maintenance Fee',
+            '💰Damage Deposit', '💰Monthly Host Rate', '💰Price Override',
+            '💰Unit Markup'
+        }
+
+        NUMERIC_FIELDS = {
+            'ClicksToViewRatio', 'DesirabilityTimesReceptivity',
+            'Standarized Minimum Nightly Price (Filter)',
+            '💰Nightly Host Rate for 2 nights', '💰Nightly Host Rate for 3 nights',
+            '💰Nightly Host Rate for 4 nights', '💰Nightly Host Rate for 5 nights',
+            '💰Nightly Host Rate for 7 nights', '💰Weekly Host Rate'
+        }
+
+        BOOLEAN_FIELDS = {
+            'Active', 'Approved', 'Complete', 'Default Extension Setting',
+            'Default Listing', 'Features - Trial Periods Allowed', 'Showcase',
+            'allow alternating roommates?', 'confirmedAvailability', 'is private?',
+            'isForUsability', 'saw chatgpt suggestions?'
+        }
+
+        JSONB_FIELDS = {
+            'AI Suggestions List', 'Clickers', 'Dates - Blocked',
+            'Days Available (List of Days)', 'Days Not Available', 'Errors',
+            'Features - Amenities In-Building', 'Features - Amenities In-Unit',
+            'Features - House Rules', 'Features - Photos', 'Features - Safety',
+            'Listing Curation', 'Location - Address', 'Location - Hoods (new)',
+            'Location - slightly different address', 'Nights Available (List of Nights) ',
+            'Nights Available (numbers)', 'Nights Not Available', 'Reviews',
+            'Users that favorite', 'Viewers', 'users with permission'
+        }
+
+        TIMESTAMP_FIELDS = {
+            'Created Date', 'Modified Date', 'Operator Last Updated AUT'
+        }
+
+        if field_name in INTEGER_FIELDS:
+            return 'integer'
+        elif field_name in NUMERIC_FIELDS or 'price' in field_name.lower() or 'rate' in field_name.lower():
+            return 'numeric'
+        elif field_name in BOOLEAN_FIELDS:
+            return 'boolean'
+        elif field_name in JSONB_FIELDS:
+            return 'jsonb'
+        elif field_name in TIMESTAMP_FIELDS:
+            return 'timestamp'
+        else:
+            return 'text'
+
+    def transform_record(self, record: Dict[str, Any], table_name: str = 'unknown') -> Dict[str, Any]:
         """
         Transform a Bubble record for Supabase insertion with comprehensive type conversion
 
@@ -244,6 +377,8 @@ class SupabaseSync:
         # Validate input is a dictionary
         if not isinstance(record, dict):
             raise ValueError(f"Expected dict for record, got {type(record).__name__}: {record}")
+
+        record_id = record.get('_id', 'unknown')
 
         # Define field type mappings for the listing table
         # This can be extended to load from a config file for other tables
@@ -307,7 +442,17 @@ class SupabaseSync:
                         if cleaned:
                             try:
                                 transformed[key] = int(round(float(cleaned)))
-                            except ValueError:
+                            except ValueError as ve:
+                                self.error_logger.log_error(
+                                    table_name=table_name,
+                                    error_type='field_transform',
+                                    error_message=f"Could not convert to integer: {ve}",
+                                    record_id=record_id,
+                                    field_name=key,
+                                    bubble_value=value,
+                                    bubble_type=type(value).__name__,
+                                    supabase_type='integer'
+                                )
                                 logger.warning(f"Could not convert '{key}' value '{value}' to integer, skipping")
                                 continue
                     else:
@@ -323,11 +468,21 @@ class SupabaseSync:
                         if cleaned:
                             try:
                                 transformed[key] = float(cleaned)
-                            except ValueError:
+                            except ValueError as ve:
                                 # If it's a "Price number (for map)" field, keep as string
                                 if 'Price number' in key:
                                     transformed[key] = value
                                 else:
+                                    self.error_logger.log_error(
+                                        table_name=table_name,
+                                        error_type='field_transform',
+                                        error_message=f"Could not convert to numeric: {ve}",
+                                        record_id=record_id,
+                                        field_name=key,
+                                        bubble_value=value,
+                                        bubble_type=type(value).__name__,
+                                        supabase_type='numeric'
+                                    )
                                     logger.warning(f"Could not convert '{key}' value '{value}' to numeric, skipping")
                                     continue
                     else:
@@ -377,6 +532,17 @@ class SupabaseSync:
                     transformed[key] = value
 
             except Exception as e:
+                # Log comprehensive error information
+                self.error_logger.log_error(
+                    table_name=table_name,
+                    error_type='field_transform',
+                    error_message=str(e),
+                    record_id=record_id,
+                    field_name=key,
+                    bubble_value=value,
+                    bubble_type=type(value).__name__,
+                    supabase_type=self.get_field_type(key)
+                )
                 logger.warning(f"Error transforming field '{key}' with value '{value}': {e}")
                 # Skip problematic fields rather than failing the entire record
                 continue
@@ -413,7 +579,7 @@ class SupabaseSync:
         # Process in batches
         for i in range(0, len(records), batch_size):
             batch = records[i:i + batch_size]
-            transformed_batch = [self.transform_record(r) for r in batch]
+            transformed_batch = [self.transform_record(r, table_name) for r in batch]
 
             try:
                 # Upsert using _id as the conflict resolution key
@@ -430,17 +596,35 @@ class SupabaseSync:
                 results['errors'] += len(batch)
                 logger.error(f"{supabase_table}: Batch {i//batch_size + 1} failed: {e}")
 
+                # Log batch error
+                self.error_logger.log_error(
+                    table_name=table_name,
+                    error_type='upsert_batch',
+                    error_message=str(e),
+                    full_record={'batch_size': len(batch), 'batch_start_index': i}
+                )
+
                 # Try individual records if batch fails
-                for record in transformed_batch:
+                for idx, (original_record, transformed_record) in enumerate(zip(batch, transformed_batch)):
                     try:
                         self.client.table(supabase_table).upsert(
-                            record,
+                            transformed_record,
                             on_conflict='_id'
                         ).execute()
                         results['success'] += 1
                         results['errors'] -= 1
                     except Exception as e2:
-                        logger.error(f"Record {record.get('_id', 'unknown')} failed: {e2}")
+                        record_id = original_record.get('_id', 'unknown')
+                        logger.error(f"Record {record_id} failed: {e2}")
+
+                        # Log individual record error with full details
+                        self.error_logger.log_error(
+                            table_name=table_name,
+                            error_type='upsert_record',
+                            error_message=str(e2),
+                            record_id=record_id,
+                            full_record=transformed_record
+                        )
 
         logger.info(f"{supabase_table} upsert complete: "
                    f"{results['success']} success, {results['errors']} errors")
@@ -476,10 +660,11 @@ class BubbleToSupabaseSync:
         # Add remaining 53 tables here as needed
     ]
 
-    def __init__(self, config: SyncConfig):
+    def __init__(self, config: SyncConfig, error_logger: ErrorLogger):
         self.config = config
+        self.error_logger = error_logger
         self.bubble_client = BubbleAPIClient(config)
-        self.supabase_sync = SupabaseSync(config)
+        self.supabase_sync = SupabaseSync(config, error_logger)
 
     def sync_table(self, table_name: str) -> Dict[str, Any]:
         """
@@ -606,6 +791,13 @@ class BubbleToSupabaseSync:
             'table_results': results
         }
 
+        # Add error statistics
+        error_stats = self.error_logger.get_errors_by_type()
+        summary['error_statistics'] = {
+            'total_errors_logged': self.error_logger.get_error_count(),
+            'errors_by_type': error_stats
+        }
+
         logger.info("=" * 80)
         logger.info("SYNCHRONIZATION COMPLETE")
         logger.info(f"Duration: {total_duration:.2f}s")
@@ -616,6 +808,13 @@ class BubbleToSupabaseSync:
         logger.info(f"Total records fetched: {summary['total_records_fetched']}")
         logger.info(f"Total records inserted: {summary['total_records_inserted']}")
         logger.info(f"Total records failed: {summary['total_records_failed']}")
+        logger.info(f"\nError Logging:")
+        logger.info(f"  - Total errors logged: {summary['error_statistics']['total_errors_logged']}")
+        if error_stats:
+            logger.info(f"  - Errors by type:")
+            for error_type, count in error_stats.items():
+                logger.info(f"    * {error_type}: {count}")
+        logger.info(f"  - Error log file: {self.error_logger.errors_file}")
         logger.info("=" * 80)
 
         # Save summary to JSON file
@@ -668,8 +867,13 @@ def main():
         logger.error("SUPABASE_SERVICE_KEY not set in environment")
         sys.exit(1)
 
+    # Create error logger with timestamp
+    run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    error_logger = ErrorLogger(run_timestamp)
+    logger.info(f"Error logging initialized: {error_logger.errors_file}")
+
     # Create sync instance
-    sync = BubbleToSupabaseSync(config)
+    sync = BubbleToSupabaseSync(config, error_logger)
 
     # Run sync
     try:
