@@ -42,18 +42,12 @@ pip install -r requirements.txt
    copy .env.template .env.production
    ```
 
-2. Edit `.env.production` and add your Supabase Service Role Key:
-   - Go to your Supabase dashboard
-   - Navigate to: Settings > API
-   - Copy the `service_role` key (NOT the `anon` key!)
-   - Paste it into `.env.production` under `SUPABASE_SERVICE_KEY`
+2. Edit `.env.production` and add your credentials:
+   - Bubble API Key (from your Bubble.io dashboard)
+   - Supabase Project URL
+   - Supabase Service Role Key (from Settings > API in Supabase dashboard)
 
-3. Verify all credentials:
-   ```
-   BUBBLE_API_KEY=your_bubble_api_key_here
-   SUPABASE_URL=your_supabase_project_url_here
-   SUPABASE_SERVICE_KEY=your_service_role_key_here
-   ```
+3. Verify all credentials are set in `.env.production`
 
 ## Usage
 
@@ -91,7 +85,7 @@ python bubble_to_supabase_sync.py --config /path/to/custom/.env
 
 The script uses Bubble's REST API:
 ```
-GET https://upgradefromstr.bubbleapps.io/version-live/api/1.1/obj/{table_name}?cursor={cursor}&limit=100
+GET {BUBBLE_BASE_URL}/{table_name}?cursor={cursor}&limit=100
 ```
 
 - Fetches 100 records per request
@@ -247,8 +241,8 @@ Add line:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `BUBBLE_API_KEY` | Bubble.io API authentication key | Required |
-| `BUBBLE_APP_NAME` | Bubble app name | upgradefromstr |
-| `BUBBLE_BASE_URL` | Base URL for Bubble API | https://... |
+| `BUBBLE_APP_NAME` | Bubble app name | Required |
+| `BUBBLE_BASE_URL` | Base URL for Bubble API | Required |
 | `SUPABASE_URL` | Supabase project URL | Required |
 | `SUPABASE_SERVICE_KEY` | Supabase service role key | Required |
 | `BATCH_SIZE` | Records per batch | 100 |
@@ -447,13 +441,13 @@ print(f"Transformed: {transformed}")
 Test Bubble API:
 ```bash
 curl -H "Authorization: Bearer YOUR_BUBBLE_API_KEY" \
-  "https://YOUR_APP_NAME.bubbleapps.io/version-live/api/1.1/obj/user?limit=1"
+  "YOUR_BUBBLE_BASE_URL/user?limit=1"
 ```
 
 Test Supabase:
 ```python
 from supabase import create_client
-client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+client = create_client("YOUR_SUPABASE_URL", "YOUR_SERVICE_KEY")
 print(client.table('user').select('_id').limit(1).execute())
 ```
 
