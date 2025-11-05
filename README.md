@@ -43,16 +43,16 @@ pip install -r requirements.txt
    ```
 
 2. Edit `.env.production` and add your Supabase Service Role Key:
-   - Go to your Supabase dashboard: https://supabase.com/dashboard/project/qcfifybkaddcoimjroca
+   - Go to your Supabase dashboard
    - Navigate to: Settings > API
    - Copy the `service_role` key (NOT the `anon` key!)
    - Paste it into `.env.production` under `SUPABASE_SERVICE_KEY`
 
 3. Verify all credentials:
    ```
-   BUBBLE_API_KEY=677ca2fc4b13f1b4eb93b91132da0afe
-   SUPABASE_URL=https://qcfifybkaddcoimjroca.supabase.co
-   SUPABASE_SERVICE_KEY=eyJhbGc... (your actual key)
+   BUBBLE_API_KEY=your_bubble_api_key_here
+   SUPABASE_URL=your_supabase_project_url_here
+   SUPABASE_SERVICE_KEY=your_service_role_key_here
    ```
 
 ## Usage
@@ -446,8 +446,8 @@ print(f"Transformed: {transformed}")
 
 Test Bubble API:
 ```bash
-curl -H "Authorization: Bearer 677ca2fc4b13f1b4eb93b91132da0afe" \
-  "https://upgradefromstr.bubbleapps.io/version-live/api/1.1/obj/user?limit=1"
+curl -H "Authorization: Bearer YOUR_BUBBLE_API_KEY" \
+  "https://YOUR_APP_NAME.bubbleapps.io/version-live/api/1.1/obj/user?limit=1"
 ```
 
 Test Supabase:
