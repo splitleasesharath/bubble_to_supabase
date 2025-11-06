@@ -66,6 +66,9 @@ backup/
 *.backup
 *.bak
 
+# Archived/outdated files
+dump/
+
 # Temporary data exports
 data_export/
 exports/

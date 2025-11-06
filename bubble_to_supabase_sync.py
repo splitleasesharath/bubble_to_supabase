@@ -36,12 +36,15 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 
 
+# Ensure logs directory exists
+os.makedirs('logs', exist_ok=True)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(f'sync_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
+        logging.FileHandler(f'logs/sync_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -53,7 +56,7 @@ class ErrorLogger:
 
     def __init__(self, run_timestamp: str):
         self.run_timestamp = run_timestamp
-        self.errors_file = f'sync_errors_{run_timestamp}.json'
+        self.errors_file = f'logs/sync_errors_{run_timestamp}.json'
         self.errors = []
 
     def log_error(
@@ -818,7 +821,7 @@ class BubbleToSupabaseSync:
         logger.info("=" * 80)
 
         # Save summary to JSON file
-        summary_file = f"sync_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        summary_file = f"logs/sync_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(summary_file, 'w') as f:
             json.dump(summary, f, indent=2)
         logger.info(f"Detailed summary saved to: {summary_file}")
