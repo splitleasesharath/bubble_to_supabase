@@ -326,14 +326,26 @@ class SupabaseSync:
             'Standarized Minimum Nightly Price (Filter)',
             '💰Nightly Host Rate for 2 nights', '💰Nightly Host Rate for 3 nights',
             '💰Nightly Host Rate for 4 nights', '💰Nightly Host Rate for 5 nights',
-            '💰Nightly Host Rate for 7 nights', '💰Weekly Host Rate'
+            '💰Nightly Host Rate for 7 nights', '💰Weekly Host Rate',
+            # bookings-leases table numeric fields (preserve decimal precision)
+            'Total Compensation', 'Total Rent', 'Paid to Date from Guest'
         }
 
+        # All boolean columns from Supabase schema - Bubble may send 0.0/1.0 as floats
         BOOLEAN_FIELDS = {
+            # Listing table booleans
             'Active', 'Approved', 'Complete', 'Default Extension Setting',
             'Default Listing', 'Features - Trial Periods Allowed', 'Showcase',
             'allow alternating roommates?', 'confirmedAvailability', 'is private?',
-            'isForUsability', 'saw chatgpt suggestions?'
+            'isForUsability', 'saw chatgpt suggestions?',
+            # User table booleans (from Supabase schema)
+            'Additional Credits Received', 'Allow Email Change', 'Hide Nights Error',
+            'Hide header announcement', 'ID documents submitted?', 'Lead Info Captured',
+            'Mobile Notifications On', 'SMS Lock', 'Toggle - Is Admin',
+            'Toggle - Is Corporate User', 'Verify - Phone', 'agreed to term and conditions?',
+            'has logged in through mobile app', 'is email confirmed', 'is usability tester',
+            'override tester?', 'reminder after 15 days sent?', 'show selector popups?',
+            'user verified?', 'user_signed_up', 'usernotifyseton'
         }
 
         JSONB_FIELDS = {
@@ -401,15 +413,30 @@ class SupabaseSync:
             'Standarized Minimum Nightly Price (Filter)',
             '💰Nightly Host Rate for 2 nights', '💰Nightly Host Rate for 3 nights',
             '💰Nightly Host Rate for 4 nights', '💰Nightly Host Rate for 5 nights',
-            '💰Nightly Host Rate for 7 nights', '💰Weekly Host Rate'
+            '💰Nightly Host Rate for 7 nights', '💰Weekly Host Rate',
+            # bookings-leases table numeric fields (preserve decimal precision)
+            'Total Compensation', 'Total Rent', 'Paid to Date from Guest'
         }
 
+        # All boolean columns from Supabase schema - Bubble may send 0.0/1.0 as floats
         BOOLEAN_FIELDS = {
+            # Listing table booleans
             'Active', 'Approved', 'Complete', 'Default Extension Setting',
             'Default Listing', 'Features - Trial Periods Allowed', 'Showcase',
             'allow alternating roommates?', 'confirmedAvailability', 'is private?',
-            'isForUsability', 'saw chatgpt suggestions?'
+            'isForUsability', 'saw chatgpt suggestions?',
+            # User table booleans (from Supabase schema)
+            'Additional Credits Received', 'Allow Email Change', 'Hide Nights Error',
+            'Hide header announcement', 'ID documents submitted?', 'Lead Info Captured',
+            'Mobile Notifications On', 'SMS Lock', 'Toggle - Is Admin',
+            'Toggle - Is Corporate User', 'Verify - Phone', 'agreed to term and conditions?',
+            'has logged in through mobile app', 'is email confirmed', 'is usability tester',
+            'override tester?', 'reminder after 15 days sent?', 'show selector popups?',
+            'user verified?', 'user_signed_up', 'usernotifyseton'
         }
+
+        # Fields that contain 'price' or 'rate' but are NOT numeric (categorical text/URLs)
+        EXCLUDED_FROM_NUMERIC = {'Price Tier', 'Price Range', 'price tier', 'QR Code generated'}
 
         JSONB_FIELDS = {
             'AI Suggestions List', 'Clickers', 'Dates - Blocked',
@@ -434,8 +461,28 @@ class SupabaseSync:
                 continue
 
             try:
+                # Handle BOOLEAN fields FIRST - must come before NUMERIC check
+                # because fields like "Toggle - Is Corporate User" contain "rate"
+                # which would incorrectly match the NUMERIC heuristic
+                if key in BOOLEAN_FIELDS:
+                    if isinstance(value, bool):
+                        transformed[key] = value
+                    elif isinstance(value, str):
+                        # Normalize string boolean values - handle "0.0", "1.0" from Bubble
+                        cleaned = value.strip().lower()
+                        if cleaned in ('0', '0.0', 'false', 'no', 'n', ''):
+                            transformed[key] = False
+                        elif cleaned in ('1', '1.0', 'true', 'yes', 'y'):
+                            transformed[key] = True
+                        else:
+                            transformed[key] = False  # Default to False for unknown
+                    elif isinstance(value, (int, float)):
+                        transformed[key] = bool(value)
+                    else:
+                        transformed[key] = bool(value)
+
                 # Handle INTEGER fields
-                if key in INTEGER_FIELDS:
+                elif key in INTEGER_FIELDS:
                     if isinstance(value, (int, float)):
                         # Round floats to nearest integer
                         transformed[key] = int(round(value))
@@ -461,8 +508,9 @@ class SupabaseSync:
                     else:
                         transformed[key] = int(value)
 
-                # Handle NUMERIC (decimal) fields
-                elif key in NUMERIC_FIELDS or 'price' in key.lower() or 'rate' in key.lower():
+                # Handle NUMERIC (decimal) fields - exclude categorical price fields
+                elif (key in NUMERIC_FIELDS or 'price' in key.lower() or 'rate' in key.lower()) \
+                     and key not in EXCLUDED_FROM_NUMERIC:
                     if isinstance(value, (int, float)):
                         transformed[key] = float(value)
                     elif isinstance(value, str):
@@ -490,18 +538,6 @@ class SupabaseSync:
                                     continue
                     else:
                         transformed[key] = float(value)
-
-                # Handle BOOLEAN fields
-                elif key in BOOLEAN_FIELDS:
-                    if isinstance(value, bool):
-                        transformed[key] = value
-                    elif isinstance(value, str):
-                        # Normalize string boolean values
-                        transformed[key] = value.lower() in ('true', 'yes', '1', 'y')
-                    elif isinstance(value, (int, float)):
-                        transformed[key] = bool(value)
-                    else:
-                        transformed[key] = bool(value)
 
                 # Handle JSONB fields (arrays and objects)
                 elif key in JSONB_FIELDS or isinstance(value, (list, dict)):
@@ -532,7 +568,16 @@ class SupabaseSync:
 
                 # Handle regular TEXT fields
                 else:
-                    transformed[key] = value
+                    # Fallback: catch any float 0.0/1.0 that might be a boolean
+                    # This handles cases where Bubble sends numeric booleans for fields
+                    # not explicitly listed in BOOLEAN_FIELDS
+                    if isinstance(value, float) and value in (0.0, 1.0):
+                        transformed[key] = bool(value)
+                    elif isinstance(value, str) and value.strip() in ('0.0', '1.0'):
+                        # Handle string "0.0"/"1.0" that should be boolean
+                        transformed[key] = value.strip() == '1.0'
+                    else:
+                        transformed[key] = value
 
             except Exception as e:
                 # Log comprehensive error information
